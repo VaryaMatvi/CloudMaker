@@ -1,0 +1,8 @@
+#cloud-config
+hostname: varya-vm
+users:
+  - name: varya
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICU2dUZbwt/2oa+0em23BamrxOkEMpabIftz6kRrW2tP varvara@varvara-ASUS-Vivobook-S-14-M5406WA-M5406WA
