@@ -82,8 +82,13 @@ def describe(dom):
                         ips.append(a["addr"])
         except libvirt.libvirtError:
             pass  
+    try:
+        autostart = bool(dom.autostart())
+    except libvirt.libvirtError:
+        autostart = False 
     return {"name": dom.name(), "state": STATES.get(state, "other"),
-            "vcpus": info[3], "memory_mb": info[1] // 1024, "ips": ips}
+            "vcpus": info[3], "memory_mb": info[1] // 1024, "ips": ips,
+            "autostart": autostart}
 
 
 def disk_paths(name):
@@ -201,6 +206,7 @@ def create_vm(body: VmCreate):
                                 vcpus=body.vcpus, disk=disk, file_iso=file_iso, network=NETWORK)
         dom = conn.defineXML(xml)
         dom.create()
+        dom.setAutostart(1)
     except Exception as e:
         for p in (disk, file_iso):
             if os.path.exists(p):
@@ -219,6 +225,7 @@ def start_vm(name: str):
     if dom.isActive():
         raise HTTPException(409, "ВМ уже запущена")
     dom.create()
+    dom.setAutostart(1)
     return describe(dom)
 
 
@@ -227,6 +234,7 @@ def stop_vm(name: str, force: bool = False):
     dom = find(name)
     if not dom.isActive():
         raise HTTPException(409, "ВМ уже остановлена")
+    dom.setAutostart(0)
     if force:
         dom.destroy()  
     else:
