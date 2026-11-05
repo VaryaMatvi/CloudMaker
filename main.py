@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 IMAGES_DIR = "/var/lib/libvirt/images"
 BASE_IMAGE = f"{IMAGES_DIR}/base-ubuntu-24.04.qcow2" 
 NETWORK = "default"
+MAX_VCPUS = 4       
+MAX_MEMORY_MB = 4096  
 
 app = FastAPI(title="CloudMaker")
 conn = libvirt.open("qemu:///system") 
@@ -84,6 +86,14 @@ def describe(dom):
 def disk_paths(name):
     return f"{IMAGES_DIR}/{name}.qcow2", f"{IMAGES_DIR}/{name}.iso"
 
+def usage():
+    cpus = 0
+    mem_mb = 0
+    for d in conn.listAllDomains():
+        info = d.info()
+        cpus += info[3]
+        mem_mb += info[1] // 1024
+    return cpus, mem_mb
 class VmCreate(BaseModel):
     name: str
     ssh_public_key: str
@@ -113,6 +123,14 @@ def create_vm(body: VmCreate):
         raise HTTPException(500, f"базовый образ не найден: {BASE_IMAGE}")
     if any(d.name() == body.name for d in conn.listAllDomains()):
         raise HTTPException(409, f"ВМ '{body.name}' уже существует")
+
+    used_cpus, used_mem = usage()
+    if used_cpus + body.vcpus > MAX_VCPUS:
+        raise HTTPException(409, f"квота CPU превышена: занято {used_cpus} из {MAX_VCPUS}, "
+                                 f"запрошено {body.vcpus}")
+    if used_mem + body.memory_mb > MAX_MEMORY_MB:
+        raise HTTPException(409, f"квота RAM превышена: занято {used_mem} из {MAX_MEMORY_MB} МБ, "
+                                 f"запрошено {body.memory_mb}")
 
     disk, file_iso = disk_paths(body.name)
     try:
@@ -176,7 +194,6 @@ def stop_vm(name: str, force: bool = False):
         dom.shutdown()   
     return describe(dom)
 
-
 @app.delete("/vms/{name}")
 def delete_vm(name: str):
     dom = find(name)
@@ -187,3 +204,9 @@ def delete_vm(name: str):
         if os.path.exists(p):
             os.remove(p)
     return {"deleted": name}
+
+@app.get("/quota")
+def get_quota():
+    used_cpus, used_mem = usage()
+    return {"vcpus": {"limit": MAX_VCPUS, "used": used_cpus, "free": MAX_VCPUS - used_cpus},
+            "memory_mb": {"limit": MAX_MEMORY_MB, "used": used_mem, "free": MAX_MEMORY_MB - used_mem}}
