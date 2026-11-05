@@ -1,0 +1,11 @@
+services:
+  cloudmaker:
+    build: .
+    container_name: cloudmaker
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - /var/run/libvirt:/var/run/libvirt
+      - /var/lib/libvirt/images:/var/lib/libvirt/images
+      - ./data:/app/data

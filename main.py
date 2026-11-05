@@ -14,7 +14,7 @@ BASE_IMAGE = f"{IMAGES_DIR}/base-ubuntu-24.04.qcow2"
 NETWORK = "default"
 MAX_VCPUS = 4       
 MAX_MEMORY_MB = 4096  
-IMAGES_DB = "images.json"
+IMAGES_DB = "data/images.json"
 IMG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,40}$")
 
 app = FastAPI(title="CloudMaker")
@@ -111,6 +111,7 @@ def load_images():
         return {}
 
 def save_images(images):
+    os.makedirs("data", exist_ok=True)
     with open(IMAGES_DB, "w") as f:
         json.dump(images, f, indent=2, ensure_ascii=False)
 class VmCreate(BaseModel):
