@@ -14,6 +14,8 @@ BASE_IMAGE = f"{IMAGES_DIR}/base-ubuntu-24.04.qcow2"
 NETWORK = "default"
 MAX_VCPUS = 4       
 MAX_MEMORY_MB = 4096  
+IMAGES_DB = "images.json"
+IMG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,40}$")
 
 app = FastAPI(title="CloudMaker")
 conn = libvirt.open("qemu:///system") 
@@ -37,10 +39,10 @@ DOMAIN_XML = """
       <source file='{disk}'/>
       <target dev='vda' bus='virtio'/>
     </disk>
-    <disk type='file' device='cdrom'>
+    <disk type='file' device='disk'>
       <driver name='qemu' type='raw'/>
       <source file='{file_iso}'/>
-      <target dev='sda' bus='sata'/>
+      <target dev='vdb' bus='virtio'/>
       <readonly/>
     </disk>
     <interface type='network'>
@@ -57,6 +59,7 @@ def run(cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"{cmd[0]}: {r.stderr.strip()}")
+    return r.stdout
 
 
 def find(name):
@@ -94,6 +97,22 @@ def usage():
         cpus += info[3]
         mem_mb += info[1] // 1024
     return cpus, mem_mb
+
+def image_info(path):
+    out = run(["qemu-img", "info", "--output=json", path])
+    d = json.loads(out)
+    return d["format"], d["virtual-size"]
+
+def load_images():
+    try:
+        with open(IMAGES_DB) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_images(images):
+    with open(IMAGES_DB, "w") as f:
+        json.dump(images, f, indent=2, ensure_ascii=False)
 class VmCreate(BaseModel):
     name: str
     ssh_public_key: str
@@ -102,7 +121,13 @@ class VmCreate(BaseModel):
     disk_gb: int = Field(5, ge=5, le=100) 
     username: str = "annonimus"
     hostname: Optional[str] = None          
-    user_data: Optional[str] = None          
+    user_data: Optional[str] = None   
+    image: Optional[str] = None  
+
+class ImageCreate(BaseModel):
+    name: str
+    path: str
+    description: str = ""     
 
 @app.get("/vms")
 def list_vms():
@@ -119,8 +144,21 @@ def create_vm(body: VmCreate):
     hostname = body.hostname or body.name
     if not NAME_RE.match(body.name) or not NAME_RE.match(hostname):
         raise HTTPException(400, "имя и hostname: a-z, 0-9 и дефис, без подчёркиваний")
-    if not os.path.exists(BASE_IMAGE):
-        raise HTTPException(500, f"базовый образ не найден: {BASE_IMAGE}")
+
+    if body.image is None:
+        path = BASE_IMAGE
+    else:
+        img = load_images().get(body.image)
+        if img is None:
+            raise HTTPException(404, f"образ '{body.image}' не зарегистрирован (список: GET /images)")
+        path = img["path"]
+    if not os.path.exists(path):
+        raise HTTPException(500, f"файл образа не найден: {path}")
+    try:
+        fmt, _ = image_info(path) 
+    except RuntimeError as e:
+        raise HTTPException(500, f"не удалось прочитать образ: {e}")
+    
     if any(d.name() == body.name for d in conn.listAllDomains()):
         raise HTTPException(409, f"ВМ '{body.name}' уже существует")
 
@@ -134,8 +172,8 @@ def create_vm(body: VmCreate):
 
     disk, file_iso = disk_paths(body.name)
     try:
-        run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2",
-             "-b", BASE_IMAGE, disk, f"{body.disk_gb}G"])
+        run(["qemu-img", "create", "-f", "qcow2", "-F", fmt,
+             "-b", path, disk, f"{body.disk_gb}G"])
 
         if body.user_data:
             user_data = body.user_data
@@ -210,3 +248,37 @@ def get_quota():
     used_cpus, used_mem = usage()
     return {"vcpus": {"limit": MAX_VCPUS, "used": used_cpus, "free": MAX_VCPUS - used_cpus},
             "memory_mb": {"limit": MAX_MEMORY_MB, "used": used_mem, "free": MAX_MEMORY_MB - used_mem}}
+
+@app.get("/images")
+def list_images():
+    return [{"name": n, **v} for n, v in load_images().items()]
+
+
+@app.post("/images", status_code=201)
+def add_image(body: ImageCreate):
+    if not IMG_RE.match(body.name):
+        raise HTTPException(400, "название: a-z, 0-9, точка, дефис, подчёркивание; начинается с буквы или цифры")
+    if not os.path.isabs(body.path) or not os.path.isfile(body.path):
+        raise HTTPException(400, f"файл не найден (нужен абсолютный путь): {body.path}")
+    try:
+        fmt, _ = image_info(body.path)
+    except RuntimeError as e:
+        raise HTTPException(400, f"это не образ диска: {e}")
+    if fmt not in ("qcow2", "raw"):
+        raise HTTPException(400, f"формат '{fmt}' не поддерживается (нужен qcow2 или raw)")
+    images = load_images()
+    if body.name in images:
+        raise HTTPException(409, f"образ '{body.name}' уже зарегистрирован")
+    images[body.name] = {"path": body.path, "description": body.description}
+    save_images(images)
+    return {"name": body.name, **images[body.name]}
+
+
+@app.delete("/images/{name}")
+def delete_image(name: str):
+    images = load_images()
+    if name not in images:
+        raise HTTPException(404, f"образ '{name}' не найден")
+    del images[name]
+    save_images(images)
+    return {"deleted": name}

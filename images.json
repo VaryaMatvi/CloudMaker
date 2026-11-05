@@ -1,0 +1,6 @@
+{
+  "ubuntu-24.04": {
+    "path": "/var/lib/libvirt/images/base-ubuntu-24.04.qcow2",
+    "description": "Ubuntu 24.04 cloud-image"
+  }
+}
